@@ -185,6 +185,7 @@
             <button onclick="quickAsk('new project')">+ New Project</button>
             <button onclick="quickAsk('search knowledge base')">🔍 Search KB</button>
             <button onclick="quickAsk('build BOM for office')">📋 Build BOM</button>
+            <button onclick="showBOMPanel()">⚙️ BOM Builder</button>
             
             <h3 style="margin-top: 20px">Products</h3>
             <button onclick="quickAsk('Wiremold floor boxes')">▣ Wiremold</button>
@@ -216,26 +217,174 @@
             <h3>📚 Knowledge Base Results</h3>
             <div id="kbResults"></div>
         </div>
+        
+        <!-- BOM Panel -->
+        <div class="bom-panel" id="bomPanel" style="display:none; position: fixed; right: 0; top: 60px; width: 400px; height: calc(100vh - 60px); background: #16213e; border-left: 1px solid #0f3460; padding: 20px; overflow-y: auto; z-index: 100;">
+            <h3 style="color: #00d9ff; margin-bottom: 15px;">📋 BOM Builder</h3>
+            <div style="margin-bottom: 15px;">
+                <input type="text" id="bomProjectName" placeholder="Project Name" style="width: 100%; padding: 10px; background: #0f3460; border: none; border-radius: 6px; color: white; margin-bottom: 10px;">
+            </div>
+            <div id="bomItems" style="margin-bottom: 15px;"></div>
+            <button onclick="addBOMItem()" style="background: #0f3460; border: 1px solid #00d9ff; color: #00d9ff; padding: 8px 15px; border-radius: 6px; cursor: pointer; margin-bottom: 15px;">+ Add Item</button>
+            <button onclick="generateBOM()" style="background: #e94560; border: none; color: white; padding: 12px 20px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: 600;">Generate BOM</button>
+            <div id="bomResults" style="margin-top: 20px;"></div>
+        </div>
     </div>
     
     <script>
-        let token = null;
-        const API = 'http://100.115.178.74:8080';
+        let bomItemCount = 0;
+        
+        async function handleEmmaStream(res, typingId) {
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let responseText = '';
+            
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.content) responseText += data.content;
+                            if (data.error) { responseText = 'Error: ' + data.error; break; }
+                        } catch(e) {}
+                    }
+                }
+            }
+            
+            removeMessage(typingId);
+            addMessage(responseText || 'No response', 'emma');
+        }
+        
+        async function sendMessage() {
+            const input = document.getElementById('input');
+            const msg = input.value.trim();
+            if (!msg) return;
+            
+            addMessage(msg, 'user');
+            input.value = '';
+            
+            const typingId = addMessage('Thinking...', 'emma');
+            
+            try {
+                const res = await fetch(`${API}/api/v1/ai/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({message: msg})
+                });
+                
+                if (res.ok) {
+                    await handleEmmaStream(res, typingId);
+                } else {
+                    removeMessage(typingId);
+                    addMessage('Error: ' + res.status, 'emma');
+                }
+            } catch(e) {
+                removeMessage(typingId);
+                addMessage('Error: ' + e.message, 'emma');
+            }
+        }
+        let bomItemCount = 0;
+        
+        function showBOMPanel() {
+            const panel = document.getElementById('bomPanel');
+            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        }
+        
+        function addBOMItem() {
+            bomItemCount++;
+            const container = document.getElementById('bomItems');
+            const div = document.createElement('div');
+            div.id = `bom-item-${bomItemCount}`;
+            div.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px;';
+            div.innerHTML = `
+                <input type="text" id="bom-code-${bomItemCount}" placeholder="Code (e.g. WD1, PT2)" style="flex: 1; padding: 8px; background: #0f3460; border: none; border-radius: 4px; color: white;">
+                <input type="number" id="bom-qty-${bomItemCount}" placeholder="Qty" value="1" style="width: 60px; padding: 8px; background: #0f3460; border: none; border-radius: 4px; color: white;">
+                <button onclick="document.getElementById('bom-item-${bomItemCount}').remove()" style="background: #e94560; border: none; color: white; border-radius: 4px; cursor: pointer; padding: 8px;">×</button>
+            `;
+            container.appendChild(div);
+        }
+        
+        async function generateBOM() {
+            const projectName = document.getElementById('bomProjectName').value || 'Untitled Project';
+            const items = [];
+            
+            for (let i = 1; i <= bomItemCount; i++) {
+                const code = document.getElementById(`bom-code-${i}`)?.value;
+                const qty = parseInt(document.getElementById(`bom-qty-${i}`)?.value || 0);
+                if (code && qty > 0) {
+                    items.push({ code, quantity: qty });
+                }
+            }
+            
+            if (items.length === 0) {
+                alert('Please add at least one item');
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API}/api/v1/bom/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ project_name: projectName, items })
+                });
+                
+                await handleEmmaStream(res, typingId); return;
+                displayBOMResults(data);
+            } catch(e) {
+                alert('Error: ' + e.message);
+            }
+        }
+        
+        function displayBOMResults(data) {
+            const container = document.getElementById('bomResults');
+            let html = `<div style="background: #0f3460; padding: 15px; border-radius: 8px; margin-bottom: 10px;">
+                <h4 style="color: #00d9ff; margin-bottom: 10px;">${data.project_name}</h4>
+                <p style="font-size: 13px; color: #888;">Total Items: ${data.total_items} | Total Units: ${data.total_units}</p>
+            </div>`;
+            
+            for (const [cat, items] of Object.entries(data.by_category || {})) {
+                html += `<div style="margin-top: 10px;">
+                    <h5 style="color: #e94560; margin-bottom: 5px;">${cat}</h5>`;
+                for (const item of items) {
+                    html += `<div style="background: #0f3460; padding: 8px; border-radius: 4px; margin-bottom: 5px; font-size: 13px;">
+                        <span style="color: #00d9ff;">${item.product}</span> - ${item.quantity} ${item.unit || 'EA'}
+                        ${item.part ? `<span style="color: #888;"> (${item.part})</span>` : ''}
+                    </div>`;
+                }
+                html += '</div>';
+            }
+            
+            if (data.unmapped?.length > 0) {
+                html += `<div style="margin-top: 10px; color: #e94560;">Unmapped: ${data.unmapped.map(u => u.code).join(', ')}</div>`;
+            }
+            
+            container.innerHTML = html;
+        }
         
         async function login() {
             try {
                 const res = await fetch(`${API}/api/v1/auth/login`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({email: 'admin@2mreps.com', password: 'admin1234'})
+                    body: JSON.stringify({email: 'nick@2meli.com', password: 'nick123'})
                 });
-                const data = await res.json();
+                await handleEmmaStream(res, typingId); return;
                 token = data.access_token;
                 document.getElementById('statusDot').classList.add('connected');
                 document.getElementById('statusText').textContent = 'Connected';
                 
                 // Get KB count
-                const statsRes = await fetch(`${API}/api/v1/knowledge/stats`, {
+                const statsRes = await fetch(`${API}/api/v1/kb/stats`, {
                     headers: {'Authorization': `Bearer ${token}`}
                 });
                 if (statsRes.ok) {
@@ -247,94 +396,25 @@
             }
         }
         
-        async function sendMessage() {
-            const input = document.getElementById('input');
-            const msg = input.value.trim();
-            if (!msg) return;
+async function handleEmmaStream(res, typingId) {
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let responseText = '';
             
-            addMessage(msg, 'user');
-            input.value = '';
-            
-            // Show typing
-            const typingId = addMessage('Thinking...', 'emma');
-            
-            try {
-                // Search KB first
-                const searchRes = await fetch(`${API}/api/v1/ai/knowledge/search`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({query: msg, maxResults: 3})
-                });
-                
-                if (searchRes.ok) {
-                    const searchData = await searchRes.json();
-                    showKBResults(searchData.knowledge_articles || []);
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.content) responseText += data.content;
+                            if (data.error) { responseText = 'Error: ' + data.error; break; }
+                        } catch(e) {}
+                    }
                 }
-                
-                // Get AI response
-                const res = await fetch(`${API}/api/v1/ai/chat`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({message: msg})
-                });
-                
-                if (res.ok) {
-                    const data = await res.json();
-                    removeMessage(typingId);
-                    addMessage(data.content || 'No response', 'emma');
+            }
+            
                 } else {
-                    removeMessage(typingId);
-                    addMessage('Error getting response', 'emma');
-                }
-            } catch(e) {
-                removeMessage(typingId);
-                addMessage('Error: ' + e.message, 'emma');
-            }
-        }
-        
-        function addMessage(text, role) {
-            const div = document.createElement('div');
-            div.className = `message ${role}`;
-            div.innerHTML = `<div class="role">${role === 'user' ? 'You' : 'EMMA'}</div>${text}`;
-            document.getElementById('messages').appendChild(div);
-            div.scrollIntoView();
-            return div;
-        }
-        
-        function removeMessage(el) {
-            if (el) el.remove();
-        }
-        
-        function showKBResults(results) {
-            const panel = document.getElementById('kbPanel');
-            const container = document.getElementById('kbResults');
-            
-            if (results.length === 0) {
-                panel.style.display = 'none';
-                return;
-            }
-            
-            panel.style.display = 'block';
-            container.innerHTML = results.map(r => `
-                <div class="kb-result" onclick="document.getElementById('input').value='${r.title}';document.getElementById('input').focus()">
-                    <h4>${r.title}</h4>
-                    <div class="score">Relevance: ${Math.round(r.score * 100)}%</div>
-                </div>
-            `).join('');
-        }
-        
-        function quickAsk(q) {
-            document.getElementById('input').value = q;
-            sendMessage();
-        }
-        
-        login();
-    </script>
-</body>
-</html>
